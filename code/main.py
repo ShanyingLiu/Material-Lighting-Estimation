@@ -1,27 +1,43 @@
 # Entry point for training baseline and multitask models
 
-import ssl
-ssl._create_default_https_context = ssl._create_unverified_context
-
 import argparse
 import contextlib
 import json
 import os
+import ssl
 import sys
+
+import numpy as np
 import torch
-from torch.utils.data import DataLoader
+import torchvision.transforms as T
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
-import torchvision.transforms as T
+from torch.utils.data import DataLoader
 
 from config import config
 from dataset.data import SphereDataset
+from evaluation.evaluator import evaluate_model, compute_all_metrics, compare_models
+from evaluation.metrics import paired_ttest
 from models.baseline_model import BaselineLightingNet
 from models.multitask_model import MaterialAwareLightingNet
 from training.losses import MultiTaskLoss
 from training.train import Trainer
-import numpy as np
-from evaluation.evaluator import evaluate_model, compute_all_metrics, compare_models
+from utils.teapot_compare import (
+    run_teapot_comparisons, copy_sample_inputs,
+    render_for_lpips, lpips_on_renders,
+)
+from utils.visualizer import (
+    plot_envmap_comparison,
+    plot_per_material_comparison,
+    plot_per_param_bucket_comparison,
+    plot_per_param_mae,
+    plot_log_mse_distribution,
+    plot_training_curves,
+)
+
+# torchvision downloads ImageNet weights over HTTPS; skip cert verification
+# for machines with a broken CA bundle.
+ssl._create_default_https_context = ssl._create_unverified_context
 
 
 def _filter_results(results, mask):
@@ -42,19 +58,6 @@ def _shiny_mask(results, material_param_names,
     idx = {n: i for i, n in enumerate(material_param_names)}
     return ((p[:, idx["roughness"]] < rough_max)
             & (p[:, idx["metallic"]] > metallic_min))
-from utils.visualizer import (
-    plot_envmap_comparison,
-    plot_per_material_comparison,
-    plot_per_param_bucket_comparison,
-    plot_per_param_mae,
-    plot_log_mse_distribution,
-    plot_training_curves,
-)
-from utils.teapot_compare import (
-    run_teapot_comparisons, copy_sample_inputs,
-    render_for_lpips, lpips_on_renders,
-)
-from evaluation.metrics import paired_ttest
 
 
 def make_dataloaders(config, transform):

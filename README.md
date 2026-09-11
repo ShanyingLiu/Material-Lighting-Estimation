@@ -1,41 +1,57 @@
 # Material-Guided Decoders: Joint Estimation of Material Properties and HDRI Lighting
 
+**Single-image HDR lighting estimation, conditioned on predicted material parameters.**
+PyTorch + Blender. Columbia University, Deep Learning for Computer Graphics, Spring 2026.
+
+**[Full write-up (PDF)](https://www.shanyingliu.com/docs/material-guided-decoders-writeup.pdf)**
+
 ![Teaser](teaser.png)
 
+## Summary
 
-Illumination estimation is a key component of achieving realism in inverse rendering, an extensively researched topic in the fields of computer graphics and computer vision. Predicting the material properties of objects with the guidance of light estimation metrics to achieve convincing relighting has also been thoroughly investigated, clearly demonstrating the intrinsic link between light and material information. However, there has been relatively few analyses of whether awareness of material semantic information may directly inform lighting prediction to increase visual realism in scenarios such as virtual object insertion. 
-This project investigates this question by predicting HDR panoramic environment maps from single synthetic images with two models. The baseline model uses an encoder and CNN decoder to predict the HDR environment map, while the multi-task model uses the same encoder but with a material-parameter regression head with material information fed back into the decoder. The multi-task model was investigated with two architecture variants to verify the robustness and influence of the material semantic information. A hierarchical evaluation method was employed to determine the correspondence of high material prediction accuracy with realistic lighting prediction. 
-he results show that while the baseline model generates HDR maps with high pixel-wise accuracy, the multi-task lighting estimation created far more visually convincing lighting recreations. This project thus demonstrates a clear case that semantic material knowledge acts as a powerful physical constraint in improving realism in illumination estimation, and the limits of applying typical pixel-wise evaluation metrics to use cases that highly value visual realism.  
+Inverse rendering treats lighting and material as entangled unknowns, but most lighting estimators never use material information explicitly. This project asks whether predicting an object's material and feeding that prediction back into the lighting decoder produces more physically plausible environment maps than a direct image-to-envmap regression.
 
-This section offers a high-level overview of the experimental design, architectural comparisons, and hypothesis guiding this project.
+Two models predict a `64×128` equirectangular HDR environment map from a single `128×128` render of a sphere:
 
-### **Data Preparation and Scene Isolation**
+- **Baseline** — ImageNet-pretrained ResNet-50 encoder -> transposed-conv decoder -> HDR envmap.
+- **Material-guided (multi-task)** — same encoder, plus a head regressing five Principled BSDF parameters (metallic, roughness, specular, transmission, IOR). The predicted material drives the decoder via FiLM (per-channel `(1+γ)·x+β` modulation in every upsample block), with a tiled-concat variant as an ablation.
 
-To directly evaluate the connection between material properties and environmental lighting, this project utilizes synthetic images of isolated objects. By controlling the experiment to focus on a single object, the network is forced to prioritize the relationship between surface appearance and the environment lighting. This simplified setup allows for more precise analysis of material-lighting entanglement, but I believe the learned priors will also be generalizable to more complex, multi-object scenes through future semantic segmentation.
+Training uses a log-HDR loss (peak-weighted MSE + L1 + SSIM) so sun pixels, which carry the structure, are not drowned out by dark sky. Evaluation goes beyond pixel metrics: predicted envmaps are used as light probes to **re-render a Utah teapot in Cycles**, and the renders are scored with LPIPS against ground truth.
 
-### **Architecture Comparison**
+**Result:** the baseline wins on pixel-wise log-MSE, but the material-guided model produces noticeably more convincing relighting, especially on glossy/metallic objects (roughness < 0.2, metallic > 0.8), where the surface reflection acts as a specular anchor for reconstructing the environment. The gap between the two rankings is itself a finding: pixel-wise envmap metrics are a poor proxy for relighting quality.
 
-To measure the impact of material guidance I created two distinct models.
+![Baseline vs. material-guided relighting](envcomp.png)
 
-- Baseline Model: A standard ResNet-based encoder-decoder architecture that performs a direct regression from the input image to the HDR environment map without any explicit material context.
-- Multitask Model: This model shares the same ResNet encoder but introduces a secondary material parameter regression head. These estimated material properties, including physical attributes like roughness and metallicity, are fed back into the lighting decoder, allowing the reconstruction process to be conditioned on the semantic identity of the object.
+## Pipeline
 
-### **Evaluation and Hypothesis**
+```
+Blender (data_gen.py)         : sphere renders + metadata.json  (5 material classes, ~15k samples)
+preprocess_hdris.py           : HDRIs cached as 64×128 float32 .npy
+main.py --mode both           : train baseline + multitask, evaluate, plot
+  └─ utils/teapot_compare.py  : re-render teapots under predicted envmaps, LPIPS
+```
 
-These models were then evaluated through comparison of their ability to predict accurate environment maps against ground truth data. However, as pixel-wise metrics often fail to capture the nuances of realistic illumination, I also emphasize the evaluation of qualitative downstream rendering. Only by re-rendering complex objects using the predicted environment maps as light probes, can we visually verify the physical plausibility of the lighting.
+```bash
+cd code
+python main.py --mode both               # train baseline + multitask, then evaluate
+python main.py --mode both --eval-only   # evaluate saved checkpoints
+```
 
-The central hypothesis of this work is that the multitask model will significantly outperform the baseline, particularly when observing glossy and metallic materials (defined by roughness < 0.2 and metallicity > 0.8). In these instances, the material awareness allows the network to treat shiny surfaces as specular anchors, effectively using the distorted reflections on the object's surface as a high-frequency roadmap to reconstruct the surrounding environment map with greater detail and accuracy.
+**Note about branches:** `main` holds the baseline and the tiled-concat multi-task model. The FiLM-conditioned `MaterialGuidedLightingNet` (the "material-guided" variant in the write-up) and the seed-sweep tooling live on the [`sweep`](../../tree/sweep) branch (`--multitask-arch film`).
 
-![Teaser](envcomp.png)
+Datasets, checkpoints and render caches are not tracked (see `.gitignore`); everything is regenerable from the scripts above. Checkpoints available on request.
 
-### Conclusion and Future Work
+## Layout
 
-This project has demonstrated that multi-task light prediction, conditioned on material awareness, is a viable and lightweight solution for inverse rendering. By treating material properties as a physical prior, realistic light probes that excel in downstream rendering tasks may be achieved. 
+| Path | What |
+| --- | --- |
+| `code/models/` | `BaselineLightingNet`, `MaterialAwareLightingNet` (tiled), `MaterialGuidedLightingNet` (FiLM), decoders |
+| `code/training/` | `Trainer`, log-HDR loss terms, from-scratch SSIM |
+| `code/evaluation/` | log-MSE, LPIPS, per-material / per-attribute slicing, paired t-tests |
+| `code/data_gen.py`, `code/render_teapot.py` | Blender scripts for dataset generation and teapot relighting |
+| `docs/Overview.md` | Detailed architecture, loss, and evaluation notes |
+| `result/material_aware_lighting/` | Evaluation figures |
 
-Future work may look like generalizing to real scenes. This model may be applied to real-world data using multi-object segmentation to handle more complex geometries.
+## Future work
 
-Another direction would be to integrate spherical mover’s loss to improve spatial misalignment issues that were observed when carrying out hdri-map-wise evaluation metrics.
-
-To address the lack of hue consistency, a pipeline that splits the lighting estimation into separate luminance and chromaticity components may be implemented. This would predict a single-channel intensity map as well as a normalized color-map, thus preventing intensity gradients from overpowering color information during backpropagation.
-
-Inspired by recent industry trends, another line to investigate is to split the pipeline into separate specular and diffuse estimation components to better refine how the model reacts to surface reflections.
+Generalizing to real, multi-object scenes via segmentation; a spherical mover's loss to address the spatial misalignment seen in envmap-space metrics; splitting prediction into luminance/chromaticity and diffuse/specular components to improve hue consistency and reflection handling.

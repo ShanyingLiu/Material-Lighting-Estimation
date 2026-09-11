@@ -1,0 +1,12 @@
+# OS / editor
+.DS_Store
+__pycache__/
+*.pyc
+
+# Large artifacts (regenerate with the scripts in code/, see README)
+dataset/
+models/*.pt
+result/*
+!result/material_aware_lighting/
+result/material_aware_lighting/*
+!result/material_aware_lighting/*.png
